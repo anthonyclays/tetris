@@ -1,0 +1,22 @@
+[package]
+authors = ["Anthony Clays <anthonyclays@gmail.com>"]
+name = "gliumtetris"
+version = "0.1.0"
+
+[features]
+default = ["tetrominos"]
+tetrominos = []
+pentominos = []
+hexominos  = []
+heptominos = []
+octominos  = []
+nonominos  = []
+decominos  = []
+
+[dependencies]
+glium = "0.15.0"
+glium_text = "0.10.0"
+nalgebra = "0.8.2"
+ncollide = "0.9.1"
+nphysics2d = "0.4.0"
+rand = "0.3.14"
