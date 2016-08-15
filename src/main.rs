@@ -1,5 +1,6 @@
 #![feature(slice_patterns, advanced_slice_patterns)]
 
+extern crate num;
 extern crate nalgebra as na;
 extern crate ncollide;
 extern crate nphysics2d;
