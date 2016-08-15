@@ -31,10 +31,7 @@ impl<'a> GraphicsProperties<'a> {
                                           &include_str!("../res/shaders/tetris.vs"),
                                           &include_str!("../res/shaders/tetris.fs"),
                                           None).unwrap(),
-            draw_params: DrawParameters {
-                point_size: Some(10.0),
-                ..Default::default()
-            },
+            draw_params: Default::default(),
             text_system: TextSystem::new(display),
             font: FontTexture::new(display, &include_bytes!("../res/fonts/Roboto-Regular.ttf")[..], 100).unwrap(),
             text_proj: *OrthographicMatrix3::new(-1.0, 23.0, -30.0, 2.0, -1.0, 1.0).as_matrix().as_ref(),
