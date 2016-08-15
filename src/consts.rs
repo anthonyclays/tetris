@@ -17,7 +17,7 @@ pub const RIGHT: f32 = 12.0;
 pub const BOTTOM: f32 = 0.0;
 pub const TOP: f32 = 16.0;
 
-pub const LINE_THRESHOLD: f32 = 0.05;
+pub const LINE_THRESHOLD: f32 = 0.1;
 pub const BLOCKS_PER_LINE: usize = 12;
 
 pub const BLOCK_DIST: f32 = 0.995 * (RIGHT - LEFT) / BLOCKS_PER_LINE as f32;
@@ -35,8 +35,8 @@ mod polyominos {
     pub use self::tetrominos::*;
     #[cfg(feature="tetrominos")]
     mod tetrominos {
-        pub const POLYOMINO_FORCE: f32 = 0.16;
-        pub const POLYOMINO_ANG_FORCE: f32 = 0.14;
+        pub const POLYOMINO_FORCE: f32 = 0.08;
+        pub const POLYOMINO_ANG_FORCE: f32 = 0.08;
         pub const POLYOMINOS: [[[usize; 2]; 4]; 7] = [I, O, T, J, L, S, Z];
         const I: [[usize; 2]; 4] = [[0, 0], [1, 0], [2, 0], [3, 0]];
         const O: [[usize; 2]; 4] = [[0, 0], [0, 1], [1, 0], [1, 1]];
