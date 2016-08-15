@@ -134,18 +134,7 @@ impl Game {
         let mut rng = rand::thread_rng();
 
         // Reference to the shape of a single block
-        let (l1, l2) = (BLOCK_SIZE/2.0 - CORNER_RADIUS, BLOCK_SIZE/2.0);
-        let translate = |rel_pos| Isometry2::new(rel_pos, ::na::zero());
-        let corner_shape = shape::ShapeHandle::new(shape::Ball::new(CORNER_RADIUS));
-        let block_shape_parts = vec![
-            (translate(::na::zero()), ShapeHandle::new(shape::Cuboid::new(Vector2::new(l1, l2)))),
-            (translate(::na::zero()), ShapeHandle::new(shape::Cuboid::new(Vector2::new(l2, l1)))),
-            (translate(Vector2::new( l1, l1)), corner_shape.clone()),
-            (translate(Vector2::new(-l1, l1)), corner_shape.clone()),
-            (translate(Vector2::new( l1,-l1)), corner_shape.clone()),
-            (translate(Vector2::new(-l1,-l1)), corner_shape),
-        ];
-        let block_shape = ShapeHandle::new(shape::Compound::new(block_shape_parts));
+        let block_shape = ShapeHandle::new(shape::ConvexHull::new(block(BLOCK_SIZE/2.0, CORNER_RADIUS, 3)));
         // let block_shape = ShapeHandle::new(shape::Cuboid::new(Vector2::new(BLOCK_SIZE/2.0, BLOCK_SIZE/2.0)));
         // Description of all the blocks in a tetromino
         let cuboids: Vec<_> = POLYOMINOS[Range::new(0, POLYOMINOS.len()).ind_sample(&mut rng)].iter()
@@ -266,7 +255,7 @@ impl Game {
 
         if !line_heights.is_empty() {
             // At least one line was found.
-            self.score += line_heights.len();
+            self.score += 10 * line_heights.len();
             self.control_object = None;
 
             let &mut Game { ref mut objects, ref mut world, .. } = self;
@@ -306,6 +295,7 @@ impl Game {
     }
 }
 
+// Create and setup a new world with boundaries
 fn create_world() -> World<f32> {
     let mut world = World::new();
     world.set_gravity(GRAVITY);
@@ -319,4 +309,24 @@ fn create_world() -> World<f32> {
     plane_geom.append_translation(&Vector2::new(RIGHT, 0.0));
     world.add_rigid_body(plane_geom);
     world
+}
+
+// Create a list of points describing the convex hull of one block.
+fn block(half_size: f32, radius: f32, points: usize) -> Vec<Point2<f32>> {
+    let l1 = half_size - radius;
+    let rel_pts: Vec<_> = (0..(points+1)).map(|n| {
+        let angle = n as f32 * ::std::f32::consts::FRAC_PI_2 / points as f32;
+        Point2::new(l1 + radius*angle.cos(), l1 + radius*angle.sin())
+    }).collect();
+    let mut result = rel_pts.clone();
+    for &Point2 { x, y } in rel_pts.iter() {
+        result.push(Point2::new(-y, x));
+    }
+    for &Point2 { x, y } in rel_pts.iter() {
+        result.push(Point2::new(-x, -y));
+    }
+    for &Point2 { x, y } in rel_pts.iter() {
+        result.push(Point2::new(y, -x));
+    }
+    result
 }
