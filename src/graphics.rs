@@ -1,6 +1,4 @@
-use std::f32::consts::FRAC_PI_2;
-
-use na::{Vector1, Rotation2, Point2, OrthographicMatrix3};
+use na::OrthographicMatrix3;
 use ncollide::shape;
 
 use glium::Surface;
@@ -60,27 +58,12 @@ impl Game {
 
             for &(inner_iso, _) in inner_shapes.iter() {
                 let transform = iso * inner_iso;
-                const L1: f32 = BLOCK_SIZE / 2.0 - CORNER_RADIUS;
-                let rel_pts: Vec<Point2<_>> = (0..(EDGES_PER_CORNER+1)).map(|n| {
-                    let angle = n as f32 * FRAC_PI_2 / EDGES_PER_CORNER as f32;
-                    Point2::new(L1 + CORNER_RADIUS * angle.cos(), L1 + CORNER_RADIUS * angle.sin())
-                }).collect();
-                vertices.extend(rel_pts.iter().map(|&pt| {
-                    let pos = transform * pt;
-                    Vertex { position: [pos.x, pos.y], color: color }
-                }));
-                vertices.extend(rel_pts.iter().map(|&pt| {
-                    let pos = transform * Rotation2::new(Vector1::new(FRAC_PI_2)) * pt;
-                    Vertex { position: [pos.x, pos.y], color: color }
-                }));
-                vertices.extend(rel_pts.iter().map(|&pt| {
-                    let pos = transform * Rotation2::new(Vector1::new(2.0 * FRAC_PI_2)) * pt;
-                    Vertex { position: [pos.x, pos.y], color: color }
-                }));
-                vertices.extend(rel_pts.iter().map(|&pt| {
-                    let pos = transform * Rotation2::new(Vector1::new(3.0 * FRAC_PI_2)) * pt;
-                    Vertex { position: [pos.x, pos.y], color: color }
-                }));
+                vertices.extend(block(BLOCK_SIZE / 2.0, CORNER_RADIUS, EDGES_PER_CORNER)
+                                .into_iter()
+                                .map(|pt| {
+                                    let pos = transform * pt;
+                                    Vertex { position: [pos.x, pos.y], color: color }
+                                }));
                 for i in 1..(VERTS_PER_BLOCK - 1) {
                     indices.extend_from_slice(&[n, n + i, n + i + 1]);
                 }

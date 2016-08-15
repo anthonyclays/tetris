@@ -134,7 +134,7 @@ impl Game {
         let mut rng = rand::thread_rng();
 
         // Reference to the shape of a single block
-        let block_shape = ShapeHandle::new(shape::ConvexHull::new(block(BLOCK_SIZE/2.0, CORNER_RADIUS, 3)));
+        let block_shape = ShapeHandle::new(shape::ConvexHull::new(block(BLOCK_SIZE/2.0, CORNER_RADIUS, EDGES_PER_CORNER)));
         // let block_shape = ShapeHandle::new(shape::Cuboid::new(Vector2::new(BLOCK_SIZE/2.0, BLOCK_SIZE/2.0)));
         // Description of all the blocks in a tetromino
         let cuboids: Vec<_> = POLYOMINOS[Range::new(0, POLYOMINOS.len()).ind_sample(&mut rng)].iter()
@@ -312,7 +312,7 @@ fn create_world() -> World<f32> {
 }
 
 // Create a list of points describing the convex hull of one block.
-fn block(half_size: f32, radius: f32, points: usize) -> Vec<Point2<f32>> {
+pub fn block(half_size: f32, radius: f32, points: u32) -> Vec<Point2<f32>> {
     let l1 = half_size - radius;
     let rel_pts: Vec<_> = (0..(points+1)).map(|n| {
         let angle = n as f32 * ::std::f32::consts::FRAC_PI_2 / points as f32;
