@@ -51,8 +51,8 @@ mod polyominos {
     pub use self::pentominos::*;
     #[cfg(feature="pentominos")]
     mod pentominos {
-        pub const POLYOMINO_FORCE: f32 = 0.03;
-        pub const POLYOMINO_ANG_FORCE: f32 = 0.024;
+        pub const POLYOMINO_FORCE: f32 = 0.1;
+        pub const POLYOMINO_ANG_FORCE: f32 = 0.12;
         pub const POLYOMINOS: [[[usize; 2]; 5]; 18] = [
             [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]],
             [[0, 0], [0, 1], [0, 2], [0, 3], [1, 0]],
