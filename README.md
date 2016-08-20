@@ -3,9 +3,15 @@ Frustration Tetris
 
 A tetris clone with a twist.
 
+### Controls
+- Spacebar spawns a new tetromino.
+- Arrow keys (or hjkl) control the movement and rotation of the tetromino.
+- You can control a tetromino until you spawn a new one, or until you score a line (whichever happens first).
+  There's no further limit to how long you can control a tetromino.
+
 ![Screenshot](screenshot.png)
 
-Written in Rust, using [glium](http://github.com/tomaka/glium) and [nphysics](https://github.com/sebcrozet/nphysics)
+Written in Rust, using [glium](http://github.com/tomaka/glium) and [nphysics](https://github.com/sebcrozet/nphysics).
 
 ### Polyominos of different sizes
 It's possible to use polyominos of any size instead of tetrominos by generating code using the Python program `tools/polyominoes.py`.
