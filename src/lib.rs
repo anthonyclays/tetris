@@ -13,6 +13,7 @@ pub mod controls;
 pub mod game;
 pub mod mesh;
 pub mod text;
+pub mod view;
 
 pub use controls::{Action, Key};
 pub use game::{BlockInstance, Game};
