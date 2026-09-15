@@ -11,16 +11,16 @@ A tetris clone with a twist.
 
 ![Screenshot](screenshot.png)
 
-Written in Rust. Physics by [Rapier](https://rapier.rs); this branch contains the
-renderer-independent core (game rules, physics, block geometry, score text) plus a
-headless smoke run. Graphical frontends live on the `modernize/glium`,
-`modernize/wgpu` and `modernize/macroquad` branches.
+Written in Rust. Physics by [Rapier](https://rapier.rs), rendering with OpenGL
+through [glium](https://github.com/glium/glium) 0.36 and [winit](https://github.com/rust-windowing/winit) 0.30.
+Every block is drawn as a GPU instance of one shared rounded-square mesh.
 
 ### Building
 ```
+cargo run --release
 cargo test            # rules, physics and text rasterisation tests
-cargo run --release   # headless 30-second simulation
 ```
+Needs an OpenGL 3.1+ driver (any desktop GPU from the last 15 years, or Mesa).
 
 ### Polyominos of different sizes
 It's possible to use polyominos of any size instead of tetrominos by generating code using the Python program `tools/polyominoes.py`.

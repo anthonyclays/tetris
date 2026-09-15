@@ -18,6 +18,13 @@ ab_glyph = "0.2"
 rand = "0.10"
 rapier2d = "0.35"
 
+# OpenGL frontend. glutin-winit and raw-window-handle are used directly (at
+# the versions glium 0.36 depends on) only to enable vsync, which glium's
+# SimpleWindowBuilder does not expose.
+glium = "0.36"
+glutin-winit = "0.5"
+raw-window-handle = "0.6"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
