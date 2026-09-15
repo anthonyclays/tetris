@@ -1,332 +1,541 @@
-use std::time::{Instant, Duration};
+//! Game rules and physics simulation, independent of any renderer.
 
-use na::{Vector1, Point2, Vector2, Isometry2};
-use na::{Norm, Rotate};
-use ncollide::shape::{self, ShapeHandle};
-use nphysics2d::object::{RigidBody, RigidBodyHandle};
-use nphysics2d::world::World;
+use std::time::Duration;
 
-use rand;
-use rand::distributions::{IndependentSample, Range};
+use rapier2d::prelude::*;
 
-use consts::*;
-use controls::Action;
+use crate::consts::*;
+use crate::controls::Action;
 
-#[derive(Clone)]
-pub struct Tetromino {
-    pub rbh: RigidBodyHandle<f32>,
+/// Everything a renderer needs to draw one block.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockInstance {
+    /// World-space centre of the block.
+    pub position: [f32; 2],
+    /// Rotation in radians, counter-clockwise.
+    pub angle: f32,
     pub color: [f32; 3],
 }
 
-pub type Block = (Isometry2<f32>, ShapeHandle<Point2<f32>, Isometry2<f32>>);
-
-impl Tetromino {
-    pub fn blocks(&self) -> Vec<Block> {
-        self.rbh.borrow()
-            .shape().as_shape::<shape::Compound<_, _>>().unwrap()
-            .shapes().iter().cloned()
-            .collect()
-    }
-
-    fn retained_blocks(&self, y_pos: f32, mut threshold: f32) -> Vec<Block> {
-        threshold *= 1.01; // meh
-        let orig_iso = *self.rbh.borrow().position();
-        self.blocks().into_iter()
-            .filter(|&(iso, _)| {
-                let y = (orig_iso.translation + orig_iso.rotation.rotate(&iso.translation)).y;
-                (y - y_pos).abs() > threshold
-            }).collect()
-    }
-
-    pub fn requires_split(&self, y_pos: f32, threshold: f32) -> bool {
-        self.retained_blocks(y_pos, threshold).len() != self.blocks().len()
-    }
-
-    pub fn split_blocks(self, world: &mut World<f32>, y_pos: f32, threshold: f32) -> Vec<Self> {
-        // Save the physical characteristics of the original object
-        let (orig_iso, orig_lin_vel, orig_ang_vel, orig_com) = {
-            let rb = self.rbh.borrow();
-            (*rb.position(), rb.lin_vel(), rb.ang_vel(), *rb.center_of_mass())
-        };
-
-        self.retained_blocks(y_pos, threshold).into_iter()
-            // Transform the list of remaining blocks into a forest of disjoint groups of blocks
-            .fold(vec![], |mut block_forest: Vec<Vec<Block>>, (iso, shape): Block| -> Vec<Vec<Block>>{
-                let (adjacent, mut others): (Vec<_>, Vec<_>) = block_forest.drain(..)
-                    .partition(|block_group: &Vec<Block>|
-                        block_group.iter().any(|&(other_iso, _)| {
-                            (other_iso.translation - iso.translation).norm() < BLOCK_SIZE * 1.3
-                        })
-                    );
-                let mut block_group: Vec<Block> = adjacent.into_iter().flat_map(|v| v.into_iter()).collect();
-                block_group.push((iso, shape));
-
-                others.push(block_group);
-
-                others
-            }).into_iter()
-            // For each group of blocks, construct a new tetromino
-            .map(|block_group: Vec<Block>| {
-                let total_shape = shape::Compound::new(block_group);
-                let mut rb = RigidBody::new_dynamic(total_shape, POLYOMINO_DENSITY, POLYOMINO_RESTITUTION, POLYOMINO_FRICTION);
-                // Compute the position, rotation, linear velocity and angular velocity
-                // of the newly generated object
-                // The transform of the new object is equal to the transform of its generator.
-                rb.set_transformation(orig_iso);
-                // The angular velocity of the new object is simply equal to the angular
-                // velocity of its generator.
-                rb.set_ang_vel(orig_ang_vel);
-                // The linear velocity of the new object is equal to the sum of the
-                // linear velocity of its generator, and the effect of the angular velocity of its
-                // generator combined with its own relative location
-                let delta = *rb.center_of_mass() - orig_com;
-                let cross_product = Vector2 {
-                    x: -orig_ang_vel.x * delta.y,
-                    y:  orig_ang_vel.x * delta.x,
-                };
-                rb.set_lin_vel(orig_lin_vel + cross_product);
-
-                // Again, never deactivate a tetromino
-                rb.set_deactivation_threshold(None);
-                // Set the margin of the object
-                rb.set_margin(0.012);
-
-                Tetromino {
-                    rbh: world.add_rigid_body(rb),
-                    color: self.color,
-                }
-            }).collect()
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rotate {
+    Clockwise,
+    Counterclockwise,
 }
 
-#[derive(Copy, Clone)]
-pub enum RotateMove { Clockwise, Counterclockwise }
-#[derive(Copy, Clone)]
-pub enum Move { Left, Right, }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shift {
+    Left,
+    Right,
+}
+
+/// One rigid body made of several block colliders.
+struct Piece {
+    body: RigidBodyHandle,
+    color: [f32; 3],
+}
+
+/// A completed row: blocks whose centre lies within `half_height` of
+/// `center` belong to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Line {
+    center: f32,
+    half_height: f32,
+}
 
 pub struct Game {
-    world: World<f32>,
-    objects: Vec<Tetromino>,
-    control_object: Option<Tetromino>,
-    rotate: Option<RotateMove>,
-    mov: Option<Move>,
+    world: PhysicsWorld,
+    pieces: Vec<Piece>,
+    /// The piece the player currently steers, if any.
+    controlled: Option<RigidBodyHandle>,
+    rotate: Option<Rotate>,
+    shift: Option<Shift>,
     score: usize,
-    last_spawn: Option<Instant>,
-    last_score: Option<Instant>,
+    /// Simulated time in seconds.
+    time: f32,
+    last_spawn: Option<f32>,
+    /// Real time not yet consumed by fixed simulation steps.
+    accumulator: f32,
+}
+
+impl Default for Game {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Game {
     pub fn new() -> Self {
         Game {
             world: create_world(),
-            objects: vec![],
-            control_object: None,
+            pieces: Vec::new(),
+            controlled: None,
             rotate: None,
-            mov: None,
+            shift: None,
             score: 0,
+            time: 0.0,
             last_spawn: None,
-            last_score: None,
+            accumulator: 0.0,
         }
     }
 
-    pub fn add_tetromino(&mut self) {
-        self.last_spawn = Some(Instant::now());
-        let mut rng = rand::thread_rng();
-
-        // Reference to the shape of a single block
-        let block_shape = ShapeHandle::new(shape::ConvexHull::new(block(BLOCK_SIZE/2.0, CORNER_RADIUS, EDGES_PER_CORNER)));
-        // let block_shape = ShapeHandle::new(shape::Cuboid::new(Vector2::new(BLOCK_SIZE/2.0, BLOCK_SIZE/2.0)));
-        // Description of all the blocks in a tetromino
-        let cuboids: Vec<_> = POLYOMINOS[Range::new(0, POLYOMINOS.len()).ind_sample(&mut rng)].iter()
-            // Each polyomino is described as a list of pairs of integers, describing the blocks in
-            // the plane that are part of the polyomino.
-            .map(|&[x, y]| {
-                let translation = BLOCK_DIST * Vector2::new(x as f32, y as f32);
-                let transform = Isometry2::new(translation, Vector1::new(0.0));
-                (transform, block_shape.clone())
-            }).collect();
-        // The tetromino shape
-        let total_shape = shape::Compound::new(cuboids);
-
-        let mut rb = RigidBody::new_dynamic(total_shape, POLYOMINO_DENSITY, POLYOMINO_RESTITUTION, POLYOMINO_FRICTION);
-        // Initial rotation of this tetromino
-        let random_rotation = Range::new(0.0, 2.0 * ::std::f32::consts::PI).ind_sample(&mut rng);
-        rb.append_rotation(&Vector1::new(random_rotation));
-        // Normalize position by moving the center of mass to the origin
-        let com = -rb.center_of_mass().to_vector();
-        rb.append_translation(&com);
-        // Move to top center
-        rb.append_translation(&Vector2::new((LEFT+RIGHT)/2.0, TOP - 3.0*BLOCK_DIST));
-        // Never deactivate a tetromino
-        rb.set_deactivation_threshold(None);
-        // Set a small margin
-        rb.set_margin(0.012);
-
-        // Register the object
-        self.objects.push(Tetromino {
-            rbh: self.world.add_rigid_body(rb),
-            color: rand::Rand::rand(&mut rng),
-        });
-        self.control_object = self.objects.last().cloned();
+    pub fn score(&self) -> usize {
+        self.score
     }
 
-    pub fn tetrominos<'a>(&'a self) -> ::std::slice::Iter<'a, Tetromino> {
-        self.objects.iter()
+    /// Simulated time since the game started, in seconds.
+    pub fn time(&self) -> f32 {
+        self.time
     }
 
-    pub fn execute_action(&mut self, action: Action) {
-        match action {
-            Action::RotateCW   => self.rotate = Some(RotateMove::Clockwise),
-            Action::RotateCCW  => self.rotate = Some(RotateMove::Counterclockwise),
-            Action::RotateStop => self.rotate = None,
-
-            Action::MoveLeft  => self.mov = Some(Move::Left),
-            Action::MoveRight => self.mov = Some(Move::Right),
-            Action::MoveStop  => self.mov = None,
-
-            Action::TrySpawn  => { self.try_spawn(); },
-            Action::GameReset => self.reset(),
-        }
+    /// Whether the player is currently steering a piece.
+    pub fn has_controlled_piece(&self) -> bool {
+        self.controlled.is_some()
     }
-    pub fn try_spawn(&mut self) -> bool {
-        match self.last_spawn {
-            Some(instant) if instant.elapsed() < Duration::from_millis(SPAWN_DELAY_MS) => false,
-            _ => {
-                self.add_tetromino();
-                true
-            }
-        }
-    }
-    pub fn score(&self) -> usize { self.score }
 
-    pub fn update(&mut self) {
-        // If there's an object controlled by the player, move it
-        if let Some(ref obj) = self.control_object {
-            let ref rbh = obj.rbh;
-            match self.rotate {
-                Some(RotateMove::Clockwise) => rbh.borrow_mut().apply_angular_momentum(Vector1::new(POLYOMINO_ANG_FORCE)),
-                Some(RotateMove::Counterclockwise) => rbh.borrow_mut().apply_angular_momentum(Vector1::new(-POLYOMINO_ANG_FORCE)),
-                None => {}
-            }
-            match self.mov {
-                Some(Move::Left)  => rbh.borrow_mut().apply_central_impulse(Vector2::new(-POLYOMINO_FORCE, 0.0)),
-                Some(Move::Right) => rbh.borrow_mut().apply_central_impulse(Vector2::new(POLYOMINO_FORCE, 0.0)),
-                None => {},
-            }
-        }
-        else {
-            // No object is controlled by the player, unconditionally reset movement
-            self.rotate = None;
-            self.mov = None;
-        }
-
-        // Removing completed lines
-
-        // Collect the y-coordinate of all individual blocks, and sort them.
-        let mut block_heights: Vec<f32> = self.objects.iter()
-            .flat_map(|tetr| {
-                let orig_iso = *tetr.rbh.borrow().position();
-                tetr.rbh.borrow().shape()
-                    .as_shape::<shape::Compound<_, _>>().unwrap()
-                    .shapes().iter()
-                    .map(|&(iso, _)| (orig_iso.translation + orig_iso.rotation.rotate(&iso.translation)).y)
-                    .collect::<Vec<_>>().into_iter()
-            }).collect();
-        block_heights.sort_by(|&y1, &y2| y1.partial_cmp(&y2).unwrap());
-        // All groups of BLOCKS_PER_LINE blocks that are at approximately the same height
-        // form a line. Each element of `line_heights` represent a horizontal line
-        // that will be deleted.
-        let line_heights: Vec<(_, _)> = block_heights.iter().cloned()
-            .zip(block_heights.iter().cloned().skip(BLOCKS_PER_LINE - 1))
-            .filter(|&(y1, y2)| y2 - y1 < LINE_THRESHOLD)
-            .fold((vec![], 0.0), |(mut lines, min_y), (y1, y2)| {
-                if y1 <= min_y {
-                    // This completed line overlaps with another completed line
-                    // This means there's more than BLOCKS_PER_LINE blocks located
-                    // on the same horizontal line - this should not happen for
-                    // reasonable values of BLOCKS_PER_LINE!
-                    return (lines, min_y);
+    /// All blocks currently in the playfield, ready for drawing.
+    pub fn blocks(&self) -> impl Iterator<Item = BlockInstance> + '_ {
+        self.pieces.iter().flat_map(move |piece| {
+            let body = &self.world.bodies[piece.body];
+            body.colliders().iter().map(move |&handle| {
+                let pose = self.world.colliders[handle].position();
+                BlockInstance {
+                    position: pose.translation.to_array(),
+                    angle: pose.rotation.angle(),
+                    color: piece.color,
                 }
-                let center = (y2 + y1) / 2.0;
-                let threshold = (y2 - y1) / 2.0;
-                lines.push((center, threshold));
-                (lines, y2)
-            }).0;
+            })
+        })
+    }
 
-        if !line_heights.is_empty() {
-            // At least one line was found.
-            self.score += 10 * line_heights.len();
-            self.control_object = None;
+    pub fn execute(&mut self, action: Action) {
+        match action {
+            Action::RotateCw => self.rotate = Some(Rotate::Clockwise),
+            Action::RotateCcw => self.rotate = Some(Rotate::Counterclockwise),
+            Action::RotateStop => self.rotate = None,
+            Action::MoveLeft => self.shift = Some(Shift::Left),
+            Action::MoveRight => self.shift = Some(Shift::Right),
+            Action::MoveStop => self.shift = None,
+            Action::TrySpawn => {
+                self.try_spawn();
+            }
+            Action::Reset => self.reset(),
+        }
+    }
 
-            let &mut Game { ref mut objects, ref mut world, .. } = self;
+    /// Spawn a new random piece unless one was spawned too recently.
+    pub fn try_spawn(&mut self) -> bool {
+        if let Some(last) = self.last_spawn
+            && self.time - last < SPAWN_DELAY
+        {
+            return false;
+        }
+        let shape = &POLYOMINOS[rand::random_range(0..POLYOMINOS.len())];
+        let angle = rand::random_range(0.0..std::f32::consts::TAU);
+        self.spawn(shape, angle, random_color());
+        true
+    }
 
-            for (y_pos, threshold) in line_heights {
-                let mut new_objects = vec![];
-                objects.retain(|tetr| {
-                    if tetr.requires_split(y_pos, threshold) {
-                        // This object is affected: remove it from the physics world...
-                        world.remove_rigid_body(&tetr.rbh);
-                        // and compute the resulting new objects + add them back in.
-                        new_objects.extend_from_slice(&tetr.clone().split_blocks(world, y_pos, threshold));
-                        false
-                    }
-                    // This object is not affected.
-                    else { true }
-                });
-                // Add all newly generated objects back into the list of objects.
-                objects.extend_from_slice(&new_objects)
+    /// Spawn a piece at the spawn point with the given orientation and hand
+    /// control of it to the player.
+    pub fn spawn(&mut self, shape: &[[usize; 2]], angle: f32, color: [f32; 3]) {
+        let offsets: Vec<Vector> = shape
+            .iter()
+            .map(|&[x, y]| Vector::new(x as f32, y as f32) * BLOCK_DIST)
+            .collect();
+        // All blocks have the same mass, so the centre of mass is the mean.
+        let local_com = offsets.iter().sum::<Vector>() / offsets.len() as f32;
+        let rotation = Rotation::from_angle(angle);
+        let translation = SPAWN_POINT - rotation.transform_vector(local_com);
+        let handle = self.add_piece(
+            Pose::from_parts(translation, rotation),
+            offsets.into_iter().map(Pose::from_translation),
+            color,
+        );
+        self.controlled = Some(handle);
+        self.last_spawn = Some(self.time);
+    }
+
+    fn add_piece(
+        &mut self,
+        pose: Pose,
+        blocks: impl IntoIterator<Item = Pose>,
+        color: [f32; 3],
+    ) -> RigidBodyHandle {
+        let body = RigidBodyBuilder::dynamic()
+            .pose(pose)
+            .can_sleep(false)
+            .build();
+        let handle = self.world.insert_body(body);
+        for local in blocks {
+            self.world
+                .insert_collider(block_collider().position(local), Some(handle));
+        }
+        self.pieces.push(Piece {
+            body: handle,
+            color,
+        });
+        handle
+    }
+
+    /// Advance the simulation by `elapsed` real time, in fixed steps.
+    pub fn advance(&mut self, elapsed: Duration) {
+        self.accumulator += elapsed.as_secs_f32().min(MAX_FRAME_TIME);
+        while self.accumulator >= TIME_STEP {
+            self.step();
+            self.accumulator -= TIME_STEP;
+        }
+    }
+
+    /// Run exactly one fixed simulation step.
+    pub fn step(&mut self) {
+        self.time += TIME_STEP;
+        self.apply_controls();
+        self.clear_lines();
+        self.world.step();
+    }
+
+    fn apply_controls(&mut self) {
+        let Some(handle) = self.controlled else {
+            // Nothing to steer: forget held keys so a new piece starts still.
+            self.rotate = None;
+            self.shift = None;
+            return;
+        };
+        let body = &mut self.world.bodies[handle];
+        match self.rotate {
+            Some(Rotate::Clockwise) => body.apply_torque_impulse(POLYOMINO_ANG_FORCE, true),
+            Some(Rotate::Counterclockwise) => body.apply_torque_impulse(-POLYOMINO_ANG_FORCE, true),
+            None => {}
+        }
+        match self.shift {
+            Some(Shift::Left) => body.apply_impulse(Vector::new(-POLYOMINO_FORCE, 0.0), true),
+            Some(Shift::Right) => body.apply_impulse(Vector::new(POLYOMINO_FORCE, 0.0), true),
+            None => {}
+        }
+    }
+
+    fn clear_lines(&mut self) {
+        let mut heights: Vec<f32> = self.blocks().map(|b| b.position[1]).collect();
+        heights.sort_by(f32::total_cmp);
+        let lines = find_lines(&heights);
+        if lines.is_empty() {
+            return;
+        }
+        self.score += 10 * lines.len();
+        self.controlled = None;
+        for line in lines {
+            self.split_pieces_on(line);
+        }
+    }
+
+    /// Remove every block lying on `line`; pieces that lose blocks are
+    /// replaced by one new body per connected group of surviving blocks.
+    fn split_pieces_on(&mut self, line: Line) {
+        let mut fragments = Vec::new();
+        let mut i = 0;
+        while i < self.pieces.len() {
+            let piece = &self.pieces[i];
+            let body = &self.world.bodies[piece.body];
+            let all = body.colliders();
+            let survivors: Vec<Pose> = all
+                .iter()
+                .map(|&c| &self.world.colliders[c])
+                .filter(|c| (c.translation().y - line.center).abs() > line.half_height * 1.01)
+                .map(|c| {
+                    *c.position_wrt_parent()
+                        .expect("block colliders have a parent")
+                })
+                .collect();
+            if survivors.len() == all.len() {
+                i += 1;
+                continue;
+            }
+            let piece = self.pieces.swap_remove(i);
+            let (pose, linvel, angvel, com) = {
+                let b = &self.world.bodies[piece.body];
+                (*b.position(), b.linvel(), b.angvel(), b.center_of_mass())
+            };
+            self.world.remove_body(piece.body);
+            for group in connected_groups(survivors) {
+                let handle = self.add_piece(pose, group, piece.color);
+                // Pieces are pushed to the end; keep `i` pointing at the
+                // next unvisited original piece.
+                fragments.push(self.pieces.pop().expect("just pushed"));
+                // A fragment keeps the parent's angular velocity. Its centre
+                // of mass moved, so its linear velocity gains the parent's
+                // rotation about the old centre of mass at the new one.
+                let body = &mut self.world.bodies[handle];
+                let delta = body.center_of_mass() - com;
+                body.set_linvel(linvel + angvel * delta.perp(), true);
+                body.set_angvel(angvel, true);
             }
         }
-
-        // Update the physics world
-        self.world.step(0.016);
+        self.pieces.extend(fragments);
     }
 
     pub fn reset(&mut self) {
-        for obj in self.objects.drain(..) {
-            self.world.remove_rigid_body(&obj.rbh);
+        for piece in self.pieces.drain(..) {
+            self.world.remove_body(piece.body);
         }
-        self.control_object = None;
+        self.controlled = None;
         self.rotate = None;
-        self.mov = None;
+        self.shift = None;
         self.score = 0;
         self.last_spawn = None;
-        self.last_score = None;
     }
 }
 
-// Create and setup a new world with boundaries
-fn create_world() -> World<f32> {
-    let mut world = World::new();
-    world.set_gravity(GRAVITY);
-    let mut plane_geom = RigidBody::new_static(shape::Plane::new(-GRAVITY), WALL_RESTITUTION, WALL_FRICTION);
-    plane_geom.append_translation(&Vector2::new(0.0, BOTTOM));
-    world.add_rigid_body(plane_geom);
-    let mut plane_geom = RigidBody::new_static(shape::Plane::new(Vector2::new(1.0, 0.0)), WALL_RESTITUTION, WALL_FRICTION);
-    plane_geom.append_translation(&Vector2::new(LEFT, 0.0));
-    world.add_rigid_body(plane_geom);
-    let mut plane_geom = RigidBody::new_static(shape::Plane::new(Vector2::new(-1.0, 0.0)), WALL_RESTITUTION, WALL_FRICTION);
-    plane_geom.append_translation(&Vector2::new(RIGHT, 0.0));
-    world.add_rigid_body(plane_geom);
+/// Given block heights sorted ascending, find every group of
+/// [`BLOCKS_PER_LINE`] blocks that lie within [`LINE_THRESHOLD`] of each other.
+fn find_lines(sorted_heights: &[f32]) -> Vec<Line> {
+    let mut lines: Vec<Line> = Vec::new();
+    let mut min_y = f32::NEG_INFINITY;
+    for window in sorted_heights.windows(BLOCKS_PER_LINE) {
+        let (low, high) = (window[0], window[BLOCKS_PER_LINE - 1]);
+        // `low <= min_y` means this window overlaps a line already found,
+        // which can only happen with more than BLOCKS_PER_LINE blocks at
+        // the same height.
+        if high - low < LINE_THRESHOLD && low > min_y {
+            lines.push(Line {
+                center: (low + high) / 2.0,
+                half_height: (high - low) / 2.0,
+            });
+            min_y = high;
+        }
+    }
+    lines
+}
+
+/// Partition block poses (relative to their body) into groups of
+/// edge-adjacent blocks.
+fn connected_groups(mut blocks: Vec<Pose>) -> Vec<Vec<Pose>> {
+    let adjacent = |a: &Pose, b: &Pose| a.translation.distance(b.translation) < BLOCK_DIST * 1.3;
+    let mut groups = Vec::new();
+    while let Some(seed) = blocks.pop() {
+        let mut group = vec![seed];
+        let mut cursor = 0;
+        while cursor < group.len() {
+            let (linked, rest): (Vec<_>, Vec<_>) =
+                blocks.drain(..).partition(|b| adjacent(&group[cursor], b));
+            group.extend(linked);
+            blocks = rest;
+            cursor += 1;
+        }
+        groups.push(group);
+    }
+    groups
+}
+
+fn block_collider() -> ColliderBuilder {
+    let half = BLOCK_SIZE / 2.0;
+    ColliderBuilder::round_cuboid(half - CORNER_RADIUS, half - CORNER_RADIUS, CORNER_RADIUS)
+        .density(POLYOMINO_DENSITY)
+        .restitution(POLYOMINO_RESTITUTION)
+        .friction(POLYOMINO_FRICTION)
+}
+
+/// A world with gravity, a floor and two walls.
+fn create_world() -> PhysicsWorld {
+    let mut world = PhysicsWorld::new();
+    world.gravity = GRAVITY;
+    world.integration_parameters.dt = TIME_STEP;
+    let walls = [
+        (Vector::new(0.0, 1.0), Vector::new(0.0, BOTTOM)),
+        (Vector::new(1.0, 0.0), Vector::new(LEFT, 0.0)),
+        (Vector::new(-1.0, 0.0), Vector::new(RIGHT, 0.0)),
+    ];
+    for (normal, at) in walls {
+        let wall = ColliderBuilder::new(SharedShape::halfspace(normal))
+            .translation(at)
+            .restitution(WALL_RESTITUTION)
+            .friction(WALL_FRICTION);
+        world.insert_collider(wall, None);
+    }
     world
 }
 
-// Create a list of points describing the convex hull of one block.
-pub fn block(half_size: f32, radius: f32, points: u32) -> Vec<Point2<f32>> {
-    let l1 = half_size - radius;
-    let rel_pts: Vec<_> = (0..(points+1)).map(|n| {
-        let angle = n as f32 * ::std::f32::consts::FRAC_PI_2 / points as f32;
-        Point2::new(l1 + radius*angle.cos(), l1 + radius*angle.sin())
-    }).collect();
-    let mut result = rel_pts.clone();
-    for &Point2 { x, y } in rel_pts.iter() {
-        result.push(Point2::new(-y, x));
+/// A saturated colour with a random hue, so pieces are always easy to tell
+/// apart from the black background.
+fn random_color() -> [f32; 3] {
+    let h = rand::random_range(0.0..6.0f32);
+    let (s, v) = (0.75, 0.95);
+    let c = v * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    [r + m, g + m, b + m]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WHITE: [f32; 3] = [1.0; 3];
+    /// Height of a block resting on the floor.
+    const RESTING: f32 = BLOCK_SIZE / 2.0;
+
+    /// Put a single block on the floor at column `col`.
+    fn place_block(game: &mut Game, col: usize) {
+        let x = LEFT + BLOCK_DIST * (col as f32 + 0.5);
+        game.add_piece(
+            Pose::from_translation(Vector::new(x, RESTING)),
+            [Pose::IDENTITY],
+            WHITE,
+        );
     }
-    for &Point2 { x, y } in rel_pts.iter() {
-        result.push(Point2::new(-x, -y));
+
+    #[test]
+    fn spawned_piece_is_centred_on_the_spawn_point() {
+        let mut game = Game::new();
+        game.spawn(&POLYOMINOS[0], 0.7, WHITE);
+        let body = &game.world.bodies[game.controlled.unwrap()];
+        assert!(body.center_of_mass().distance(SPAWN_POINT) < 1e-4);
+        assert_eq!(game.blocks().count(), POLYOMINOS[0].len());
+        assert!(game.blocks().all(|b| (b.angle - 0.7).abs() < 1e-5));
     }
-    for &Point2 { x, y } in rel_pts.iter() {
-        result.push(Point2::new(y, -x));
+
+    #[test]
+    fn spawning_is_rate_limited_by_simulated_time() {
+        let mut game = Game::new();
+        assert!(game.try_spawn());
+        assert!(!game.try_spawn());
+        for _ in 0..10 {
+            game.advance(Duration::from_secs_f32((SPAWN_DELAY + 0.1) / 10.0));
+        }
+        assert!(game.try_spawn());
     }
-    result
+
+    #[test]
+    fn advance_runs_fixed_steps() {
+        let mut game = Game::new();
+        game.advance(Duration::from_millis(100));
+        assert_eq!((game.time() / TIME_STEP).round() as u32, 6);
+        // A long stall is clamped instead of simulating minutes at once.
+        game.advance(Duration::from_secs(60));
+        assert!(game.time() < 1.0);
+    }
+
+    #[test]
+    fn pieces_stay_inside_the_playfield() {
+        let mut game = Game::new();
+        for (i, shape) in POLYOMINOS.iter().enumerate() {
+            game.spawn(shape, i as f32, WHITE);
+            game.execute(if i % 2 == 0 {
+                Action::MoveLeft
+            } else {
+                Action::MoveRight
+            });
+            game.execute(Action::RotateCw);
+            for _ in 0..90 {
+                game.step();
+            }
+        }
+        for _ in 0..600 {
+            game.step();
+        }
+        for block in game.blocks() {
+            let [x, y] = block.position;
+            assert!(x > LEFT && x < RIGHT, "block escaped horizontally: {x}");
+            assert!(y > BOTTOM, "block fell through the floor: {y}");
+            assert!(y < TOP - 4.0, "block did not settle: {y}");
+        }
+    }
+
+    #[test]
+    fn find_lines_detects_full_rows_only() {
+        let mut heights: Vec<f32> = (0..BLOCKS_PER_LINE)
+            .map(|i| 0.5 + 0.001 * i as f32)
+            .collect();
+        heights.extend((0..BLOCKS_PER_LINE - 1).map(|_| 1.5));
+        heights.extend((0..BLOCKS_PER_LINE).map(|i| 2.5 + 0.002 * i as f32));
+        heights.sort_by(f32::total_cmp);
+        let lines = find_lines(&heights);
+        assert_eq!(lines.len(), 2);
+        assert!((lines[0].center - 0.5055).abs() < 1e-4);
+        assert!((lines[1].center - 2.511).abs() < 1e-4);
+    }
+
+    #[test]
+    fn connected_groups_splits_disconnected_blocks() {
+        let at = |x: f32, y: f32| Pose::from_translation(Vector::new(x, y) * BLOCK_DIST);
+        let groups = connected_groups(vec![at(0.0, 0.0), at(2.0, 0.0), at(2.0, 1.0), at(2.0, 2.0)]);
+        let mut sizes: Vec<usize> = groups.iter().map(Vec::len).collect();
+        sizes.sort();
+        assert_eq!(sizes, [1, 3]);
+    }
+
+    #[test]
+    fn a_full_row_is_cleared_and_scored() {
+        let mut game = Game::new();
+        for col in 0..BLOCKS_PER_LINE {
+            place_block(&mut game, col);
+        }
+        game.step();
+        assert_eq!(game.score(), 10);
+        assert_eq!(game.blocks().count(), 0);
+        assert!(game.pieces.is_empty());
+        assert_eq!(game.world.bodies.len(), 0);
+    }
+
+    #[test]
+    fn a_partial_row_is_kept() {
+        let mut game = Game::new();
+        for col in 0..BLOCKS_PER_LINE - 1 {
+            place_block(&mut game, col);
+        }
+        game.step();
+        assert_eq!(game.score(), 0);
+        assert_eq!(game.blocks().count(), BLOCKS_PER_LINE - 1);
+    }
+
+    #[test]
+    fn clearing_a_row_splits_pieces_and_keeps_their_motion() {
+        let mut game = Game::new();
+        for col in 0..BLOCKS_PER_LINE - 1 {
+            place_block(&mut game, col);
+        }
+        // A vertical bar whose bottom block completes the row.
+        let x = LEFT + BLOCK_DIST * (BLOCKS_PER_LINE as f32 - 0.5);
+        let bar = game.add_piece(
+            Pose::from_translation(Vector::new(x, RESTING)),
+            (0..4).map(|i| Pose::from_translation(Vector::new(0.0, i as f32 * BLOCK_DIST))),
+            WHITE,
+        );
+        game.world.bodies[bar].set_angvel(2.0, true);
+        game.controlled = Some(bar);
+
+        game.step();
+
+        assert_eq!(game.score(), 10);
+        assert!(!game.has_controlled_piece());
+        assert_eq!(game.pieces.len(), 1, "only the bar's remainder survives");
+        let fragment = &game.world.bodies[game.pieces[0].body];
+        assert_eq!(fragment.colliders().len(), 3);
+        assert!((fragment.angvel() - 2.0).abs() < 1e-3);
+        // Blocks in the cleared row are gone, the rest kept their columns.
+        assert_eq!(game.blocks().count(), 3);
+        assert!(game.blocks().all(|b| (b.position[0] - x).abs() < 0.05));
+    }
+
+    #[test]
+    fn reset_empties_the_world() {
+        let mut game = Game::new();
+        game.spawn(&POLYOMINOS[1], 0.0, WHITE);
+        game.execute(Action::MoveLeft);
+        game.execute(Action::Reset);
+        assert_eq!(game.blocks().count(), 0);
+        assert_eq!(game.world.bodies.len(), 0);
+        assert!(!game.has_controlled_piece());
+        assert_eq!(game.shift, None);
+        assert!(game.try_spawn(), "reset also lifts the spawn delay");
+    }
 }

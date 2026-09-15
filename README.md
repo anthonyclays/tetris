@@ -11,7 +11,16 @@ A tetris clone with a twist.
 
 ![Screenshot](screenshot.png)
 
-Written in Rust, using [glium](http://github.com/tomaka/glium) and [nphysics](https://github.com/sebcrozet/nphysics).
+Written in Rust. Physics by [Rapier](https://rapier.rs); this branch contains the
+renderer-independent core (game rules, physics, block geometry, score text) plus a
+headless smoke run. Graphical frontends live on the `modernize/glium`,
+`modernize/wgpu` and `modernize/macroquad` branches.
+
+### Building
+```
+cargo test            # rules, physics and text rasterisation tests
+cargo run --release   # headless 30-second simulation
+```
 
 ### Polyominos of different sizes
 It's possible to use polyominos of any size instead of tetrominos by generating code using the Python program `tools/polyominoes.py`.
@@ -21,4 +30,4 @@ For example, to compile the game for pentominos (5 blocks / polyomino):
 2. Copy the output of this command into the module `polyominos` in `src/consts.rs`
 3. Fill in a value for the linear and angular forces in the generated code (marked by `TODO`)
 4. Add the relevant feature (`pentominos = []`) in `Cargo.toml`
-5. Recompile and run the game with this feature activated: `cargo run --release --no-default-features --features="pentominos"`
+5. Recompile and run the game with this feature activated: `cargo run --release --features pentominos`
