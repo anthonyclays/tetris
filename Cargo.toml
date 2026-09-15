@@ -18,6 +18,9 @@ ab_glyph = "0.2"
 rand = "0.10"
 rapier2d = "0.35"
 
+# macroquad frontend (window, input, batched 2D drawing and text in one crate)
+macroquad = "0.4"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

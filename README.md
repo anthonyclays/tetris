@@ -11,15 +11,13 @@ A tetris clone with a twist.
 
 ![Screenshot](screenshot.png)
 
-Written in Rust. Physics by [Rapier](https://rapier.rs); this branch contains the
-renderer-independent core (game rules, physics, block geometry, score text) plus a
-headless smoke run. Graphical frontends live on the `modernize/glium`,
-`modernize/wgpu` and `modernize/macroquad` branches.
+Written in Rust. Physics by [Rapier](https://rapier.rs), window, input and
+drawing by [macroquad](https://macroquad.rs) 0.4.
 
 ### Building
 ```
+cargo run --release
 cargo test            # rules, physics and text rasterisation tests
-cargo run --release   # headless 30-second simulation
 ```
 
 ### Polyominos of different sizes
