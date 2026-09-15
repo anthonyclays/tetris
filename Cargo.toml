@@ -18,6 +18,15 @@ ab_glyph = "0.2"
 rand = "0.10"
 rapier2d = "0.35"
 
+# wgpu frontend
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+wgpu = "30"
+winit = "0.30"
+
+[dev-dependencies]
+png = "0.17"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

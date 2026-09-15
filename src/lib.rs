@@ -12,6 +12,7 @@ pub mod consts;
 pub mod controls;
 pub mod game;
 pub mod mesh;
+pub mod render;
 pub mod text;
 pub mod view;
 
