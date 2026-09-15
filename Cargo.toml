@@ -1,18 +1,23 @@
 [package]
+name = "frustration-tetris"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
 authors = ["Anthony Clays <anthonyclays@gmail.com>"]
-name = "gliumtetris"
-version = "0.1.0"
+description = "A Tetris clone with a twist: every piece is a rigid body."
 
 [features]
 default = ["tetrominos"]
+# Which family of polyominoes to play with. `pentominos` takes precedence
+# when both are enabled, so `--features pentominos` is enough.
 tetrominos = []
 pentominos = []
 
 [dependencies]
-glium = "0.15.0"
-glium_text = "0.10.0"
-nalgebra = "0.8.2"
-ncollide = "0.9.1"
-nphysics2d = "0.4.0"
-num = "0.1.34"
-rand = "0.3.14"
+ab_glyph = "0.2"
+rand = "0.10"
+rapier2d = "0.35"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
